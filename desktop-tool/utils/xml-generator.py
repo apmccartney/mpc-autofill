@@ -9,7 +9,7 @@ import requests
 import sys
 import xml.etree.ElementTree
 
-from PIL import Image
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 
 element = xml.etree.ElementTree.Element
 element_tree = xml.etree.ElementTree.ElementTree
@@ -78,15 +78,66 @@ def partial(fn, *args, **kwargs):
     return _Result(fn, args, kwargs)
 
 def lines_of(path):
-    with open(path, 'r') as lines:
-        for line in lines:
-            yield line
+    try:
+        with open(path, 'r') as lines:
+            for line in lines:
+                yield line
+    except:
+        pass
 
     return
 
+class Watermark:
+    def __init__(self, text, font, width, height):
+        self.__face = Watermark.__make_face(text, font, width, height)
+        self.__back = Watermark.__make_back(text, font, width, height)
+
+    @staticmethod
+    def __prepare_textbox(text, font, width, height):
+        layer = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(layer)
+        _, _, textbox_width, textbox_height = draw.textbbox((0, 0), text, font=font)
+
+        class _Result:
+            def __init__(self, layer, draw, width, height):
+                self.layer = layer
+                self.draw = draw
+                self.width = width
+                self.height = height
+
+        return _Result(layer, draw, textbox_width, textbox_height)
+
+    @staticmethod
+    def __make_face(text, font, width, height):
+        textbox = Watermark.__prepare_textbox(text, font, width, height)
+        text_position = ((width - textbox.width) / 2, height / 3 - textbox.height / 2)
+        textbox.draw.text(text_position, text, font=font, fill=(255, 255, 255, 255))
+        return textbox.layer
+
+    @staticmethod
+    def __make_back(text, font, width, height):
+        textbox = Watermark.__prepare_textbox(text, font, width, height)
+        text_position = ((width - textbox.width) / 2, (height - textbox.height) / 2)
+        textbox.draw.text(text_position, text, font=font, fill=(255, 255, 255, 255))
+        return textbox.layer
+
+    def face(self, image):
+        assert image.size == self.__face.size
+        return Image.alpha_composite(image, self.__face)
+
+    def back(self, image):
+        assert image.size == self.__back.size
+        return Image.alpha_composite(image, self.__back)
+
+def resize(width, height, image):
+    return image.resize((width, height))
+
+def expand_border(image):
+    width, _ = image.size
+    return ImageOps.expand(image, border=int(width * 0.0425), fill='black')
+
 def make_order(image_cache_path, remote, entries):
     order = element("order")
-
     image_path_template = os.path.join(image_cache_path, "{}.png")
     image_path = image_path_template.format("cardback")
 
@@ -94,7 +145,7 @@ def make_order(image_cache_path, remote, entries):
         url = remote[".card-back"]
         response = requests.get(url, stream=True)
         response.raw.decode_content = True
-        Image.open(response.raw).convert("RGB").save(image_path)
+        expand_border(make_order.watermark.back(resize(make_order.width, make_order.height, Image.open(response.raw).convert("RGBA")))).save(image_path)
 
     subelement(order, 'cardback').text = image_path
 
@@ -112,7 +163,7 @@ def make_order(image_cache_path, remote, entries):
             url = remote[name]
             response = requests.get(url, stream=True)
             response.raw.decode_content = True
-            Image.open(response.raw).convert("RGB").save(image_path)
+            expand_border(make_order.watermark.face(resize(make_order.width, make_order.height, Image.open(response.raw).convert("RGBA")))).convert("RGB").save(image_path)
 
         subelement(card, "id").text = image_path
         subelement(card, "slots").text = ", ".join(
@@ -130,6 +181,9 @@ def make_order(image_cache_path, remote, entries):
 
     return element_tree(order)
 
+make_order.width = 848
+make_order.height = 1130
+make_order.watermark = Watermark("PROXY", ImageFont.truetype('arial.ttf', 140), make_order.width, make_order.height)
 make_order.brackets = [18, 36, 55, 72, 90, 108, 126, 144, 162, 180, 198, 216, 234, 396, 504, 612]
 
 def main():
